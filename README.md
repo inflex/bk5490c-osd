@@ -39,7 +39,15 @@ Build
 
     bk5490c.exe -p 5   ( try use COM5 )
 	
+# TODO
 
+    * Flesh out support for more meter modes ( temperature, period, ACDC-Volts, AC-Current, DC-Current ) - nothing explicitly hard there, just a case of actually implementing the conversions
+    * Make it work with mingw build on linux without perhaps having to explicitly defining where the mingw toolchain is in Makefile
+    * Integrate the defacto font as a #include ( already have the .h/.cpp, just have to test it works )
+    * Add pause mode
+    * Work out how to speed up the volts measurements. By default seems to be stuck at ~2sps which is to be expected from 6.5 digit, need to determine how to tell meter to use less precision for faster results
+
+    
 
 
 
