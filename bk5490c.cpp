@@ -478,7 +478,7 @@ int enable_coms(struct glb *pg, wchar_t *com_port) {
 }
 
 
-bool WriteRequest( HANDLE hComm, char * lpBuf, DWORD dwToWrite) {
+bool WriteRequest( struct glb *g, char * lpBuf, DWORD dwToWrite) {
 
 	flog("Starting buffer write\n");
 	OVERLAPPED osWrite = {0};
@@ -492,13 +492,13 @@ bool WriteRequest( HANDLE hComm, char * lpBuf, DWORD dwToWrite) {
 		return FALSE;
 
 	// Issue write.
-	if (!WriteFile(hComm, lpBuf, dwToWrite, &dwWritten, &osWrite)) {
+	if (!WriteFile(g->hComm, lpBuf, dwToWrite, &dwWritten, &osWrite)) {
 		if (GetLastError() != ERROR_IO_PENDING) { 
 			// WriteFile failed, but it isn't delayed. Report error and abort.
 			fRes = false;
 		} else {
 			// Write is pending.
-			if (!GetOverlappedResult(hComm, &osWrite, &dwWritten, TRUE)) {
+			if (!GetOverlappedResult(g->hComm, &osWrite, &dwWritten, TRUE)) {
 				fRes = false;
 			} else {
 				// Write operation completed successfully.
@@ -515,25 +515,28 @@ bool WriteRequest( HANDLE hComm, char * lpBuf, DWORD dwToWrite) {
 	return fRes;
 }
 
-int ReadResponse( HANDLE hComm, char *buffer, size_t buf_limit ) {
+int ReadResponse( struct glb *g, char *buffer, size_t buf_limit ) {
 	char chRead = 0;
 	int buf_index = 0;
 	int end_of_frame_received = 0;
 	DWORD dwCommEvent;
 	DWORD dwRead;
 
+	buffer[0] = '\0';
+	buffer[1] = '\0';
+
 	while (!end_of_frame_received) {
 		// Keep trying until we've received an end-of-frame \r
 		//
 		//
-		if (WaitCommEvent(hComm, &dwCommEvent, NULL)) {
+		if (WaitCommEvent(g->hComm, &dwCommEvent, NULL)) {
 			// If we've got something in the comm buffer pipe
 			//
 			//
 			do {
 				// If we read 1 char and it's successful
 				//
-				if (ReadFile(hComm, &chRead, 1, &dwRead, NULL)) {
+				if (ReadFile(g->hComm, &chRead, 1, &dwRead, NULL)) {
 
 					// If we actually did read ONE byte
 					//
@@ -564,6 +567,7 @@ int ReadResponse( HANDLE hComm, char *buffer, size_t buf_limit ) {
 				}
 			} while (dwRead && !end_of_frame_received);
 		} else {
+			flog("Error from WaitCommEvent()\n");
 			// Error in WaitCommEvent
 			break;
 		}
@@ -572,7 +576,7 @@ int ReadResponse( HANDLE hComm, char *buffer, size_t buf_limit ) {
 }
 
 
-bool auto_detect_port(struct glb *pg) {
+bool auto_detect_port(struct glb *g) {
 	TCHAR szDevices[65535];
 	unsigned long dwChars = QueryDosDevice(NULL, szDevices, 65535);
 	TCHAR *ptr = szDevices;
@@ -585,24 +589,24 @@ bool auto_detect_port(struct glb *pg) {
 
 		if (swscanf(ptr, L"COM%d", &port) == 1) { // if it finds the format COM#
 
-			if (port > 0) {
+			if (port >= 0) {
 				int r = 0;
 
 				// Try the port...
 				//
 				//
-				pg->com_address = port;
-				flog("Port detected: COM%d\r\n",port);
+				g->com_address = port;
+				flog("Attempting detected port: COM%d\r\n",port);
 
 				// Compose the port path ( though I suppose we could use the ptr from above )
 				//
 				//
 				snwprintf(com_port, sizeof(com_port), L"\\\\.\\COM%d", port);
-				r = enable_coms(pg, com_port); // establish serial communication parameters
+				r = enable_coms(g, com_port); // establish serial communication parameters
 				if (r) {
 					flog("Could not enable comms for port %d, jumping to next device\r\n", port);
-					if(pg->hComm) { // prevent small memory leak!
-						CloseHandle(pg->hComm);
+					if(g->hComm) { // prevent small memory leak!
+						CloseHandle(g->hComm);
 					}
 					continue;
 
@@ -616,22 +620,28 @@ bool auto_detect_port(struct glb *pg) {
 				//
 				char response[1024];
 				flog("Querying meter's IDN\n");
-				WriteRequest(pg->hComm, SCPI_IDN, strlen(SCPI_IDN));
-				ReadResponse(pg->hComm, response, sizeof(response));
-				flog("Response received: %s\n", response);
-				if (strstr(response, "BK Precision, 549XC")) {
-					return true; // and our com port is now open
-				}
+				WriteRequest(g, SCPI_IDN, strlen(SCPI_IDN));
+				ReadResponse(g, response, sizeof(response));
 
-				// if we didn't get the right IDN back, close this port and move to the next (if any)
-				//
-				if(pg->hComm) {
-					CloseHandle(pg->hComm);
+				flog("Response received: %s\n", response);
+				if (strstr(response, "BK Precision,549")) {
+					flog("ID match, this is the right port; returning true for port %d.\n", port);
+					return true; // and our com port is now open
+				} else {
+					flog("No match. Try next port\n");
 				}
 			} // if port > 0
 		} // swscanf()
+	
+		// advance the string pointers to the next device
+		//
+      TCHAR *temp_ptr = wcschr(ptr, '\0');
+      dwChars -= (DWORD)((temp_ptr - ptr) / sizeof(TCHAR) + 1);
+      ptr = temp_ptr + 1;
+
 	} // while dwChars
 
+	flog("Was not able to find a matching port in the system. Returning false.\n");
 	return false; // if we made it to the end of the function, auto-detection failed
 
 } // Autodetect
@@ -655,7 +665,7 @@ Changes:
 \------------------------------------------------------------------*/
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
 
-	struct glb g;        // Global structure for passing variables around
+	struct glb glbs, *g;        // Global structure for passing variables around
 	char meter_conf[SSIZE];
 	int mode_was_changed = 0;
 
@@ -681,19 +691,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
 	flog_enable(false);
 
-	glbs = &g;
+	g = &glbs;
 
 	/*
 	 * Initialise the global structure
 	 */
-	init(&g);
+	init(g);
 
 	/*
 	 * Parse our command line parameters
 	 */
-	parse_parameters(&g);
+	parse_parameters(g);
 
-	if (g.debug) {
+	g->debug = true;
+
+	if (g->debug) {
 		flog_enable( true );
 		flog_init( "logfile.txt" );
 		flog("BUILD: %s %s\n", __DATE__, __TIME__);
@@ -713,8 +725,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		exit(1);
 	}
 
-	g.window_width = g.window_x;
-	g.window_height = g.window_y;
+	g->window_width = g->window_x;
+	g->window_height = g->window_y;
 
 
 #define HOTKEY_VOLTS 1000
@@ -739,10 +751,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	RegisterHotKey(NULL, HOTKEY_TEMPERATURE, MOD_ALT + MOD_SHIFT, 'T'); 
 
 	TTF_Init();
-	TTF_Font *font = TTF_OpenFont("RobotoMono-Bold.ttf", g.font_size);
-	if ( !font ) { flog("Ooops - something went wrong when trying to create the %d px font", g.font_size ); exit(1); }
-	TTF_Font *font_half = TTF_OpenFont("RobotoMono-Bold.ttf", g.font_size/2);
-	if ( !font ) { flog("Ooops - something went wrong when trying to create the %d px font", g.font_size/2 ); exit(1); }
+	TTF_Font *font = TTF_OpenFont("RobotoMono-Bold.ttf", g->font_size);
+	if ( !font ) { flog("Ooops - something went wrong when trying to create the %d px font", g->font_size ); exit(1); }
+	TTF_Font *font_half = TTF_OpenFont("RobotoMono-Bold.ttf", g->font_size/2);
+	if ( !font ) { flog("Ooops - something went wrong when trying to create the %d px font", g->font_size/2 ); exit(1); }
 
 
 	/*
@@ -753,14 +765,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	 */
 	int data_w, data_h;
 	TTF_SizeText(font_half, "00.000", &data_w, &data_h);
-	TTF_SizeText(font, " 00.00000 mV", &g.window_width, &g.window_height);
-	g.window_width += data_w;
-	g.window_height *= 1.85;
+	TTF_SizeText(font, " 00.00000 mV", &g->window_width, &g->window_height);
+	g->window_width += data_w;
+	g->window_height *= 1.85;
 
-	if (g.wx_forced) g.window_width = g.wx_forced;
-	if (g.wy_forced) g.window_height = g.wy_forced;
+	if (g->wx_forced) g->window_width = g->wx_forced;
+	if (g->wy_forced) g->window_height = g->wy_forced;
 
-	SDL_Window *window = SDL_CreateWindow("B&K 549XC Meter", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g.window_width, g.window_height, 0);
+	SDL_Window *window = SDL_CreateWindow("B&K 549XC Meter", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g->window_width, g->window_height, 0);
 	SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
 	if (!font) {
 		flog("Error trying to open font :( \r\n");
@@ -768,8 +780,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	}
 
 
-	/* Select the color for drawing. It is set to red here. */
-	SDL_SetRenderDrawColor(renderer, g.background_color.r, g.background_color.g, g.background_color.b, 255 );
+	/* Select the color for drawing-> It is set to red here. */
+	SDL_SetRenderDrawColor(renderer, g->background_color.r, g->background_color.g, g->background_color.b, 255 );
 
 	/* Clear the entire screen to our selected color. */
 	SDL_RenderClear(renderer);
@@ -778,37 +790,45 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	//
 	// Handle the COM Port
 	//
-	if (g.com_address == DEFAULT_COM_PORT) { // no port was specified, so attempt an auto-detect
+	if (g->com_address == DEFAULT_COM_PORT) { // no port was specified, so attempt an auto-detect
 		flog("Now attempting an auto-detect....\r\n");
-		if(!auto_detect_port(&g))  { // returning false means auto-detect failed
+		if(!auto_detect_port(g))  { // returning false means auto-detect failed
 			flog("Failed to automatically detect COM port. Perhaps try using -p?\r\n");
 			exit(1);
 		}
-		flog("COM%d automatically detected.\r\n",g.com_address); 
+		flog("COM%d successfully detected.\r\n",g->com_address); 
 
-	} else { // the port was specified, so let's try enabling it
-		flog("Now attempting to connect to COM%d....\r\n", g.com_address);
-		snwprintf(com_port, sizeof(com_port), L"COM%d", g.com_address);
-		flog("Now attempting to connect to %S....\r\n", com_port);
-		enable_coms(&g, com_port); // establish serial communication parameters
-		flog("Connection attempt done COM%d....\r\n", g.com_address);
+	} else {
+
+		int r = 0;
+		flog("CLI specified connection to port: COM%d....\r\n", g->com_address);
+		snwprintf(com_port, sizeof(com_port), L"COM%d", g->com_address);
+		flog("Now attempting to connect to: %S....\r\n", com_port);
+		r = enable_coms(g, com_port); // establish serial communication parameters
+		flog("Connection attempt result = %d....\r\n", r);
+		if (r != 0) {
+			flog("Unable to connect to port %d due to result=%d\n", g->com_address, r);
+			exit(1);
+		}
 	} 
 
 
-	flog("Resetting meter\n");
-	WriteRequest(g.hComm, SCPI_RST, strlen(SCPI_RST));
+	SDL_Delay(250);
 
-	SDL_Delay(100);
+	flog("Request IDN\n");
+	WriteRequest(g, SCPI_IDN, strlen(SCPI_IDN));
+	ReadResponse(g, response, sizeof(response));
+	flog("IDN Response: %s\n", response);
 
 	flog("Setting meter to REMOTE modes\n");
-	WriteRequest(g.hComm, SCPI_REMOTE, strlen(SCPI_REMOTE));
+	WriteRequest(g, SCPI_REMOTE, strlen(SCPI_REMOTE));
 
 	flog("Setting continuity mode beep ON\n");
-	WriteRequest(g.hComm, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
+	WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
 
 	flog("Setting Speeds of measurements\n");
-	WriteRequest(g.hComm, SCPI_VAC_FAST, strlen(SCPI_VAC_FAST));
-	WriteRequest(g.hComm, SCPI_VDC_FAST, strlen(SCPI_VDC_FAST));
+	WriteRequest(g, SCPI_VAC_FAST, strlen(SCPI_VAC_FAST));
+	WriteRequest(g, SCPI_VDC_FAST, strlen(SCPI_VDC_FAST));
 
 	HWND hwnd;
 
@@ -896,22 +916,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		if (mode_was_changed) {
 			mode_was_changed = 0;
 			flog("Request TO meter: '%s'\n", mmodes[meter_mode].query);
-			com_write_status = WriteRequest(g.hComm, mmodes[meter_mode].query, strlen(mmodes[meter_mode].query));
+			com_write_status = WriteRequest(g, mmodes[meter_mode].query, strlen(mmodes[meter_mode].query));
 
 			char response[1024];
 			flog("Querying response...\n");
-			ReadResponse(&g, response, sizeof(response));
+			ReadResponse(g, response, sizeof(response));
 			flog("Response from meter: '%s'\n", response);
 
-			com_write_status = WriteRequest(g.hComm, SCPI_BEEP, strlen(SCPI_BEEP));
+			com_write_status = WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
 			flog("Setting continuity mode beep ON\n");
-			com_write_status = WriteRequest(g.hComm, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
+			com_write_status = WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
 		} 
 
 		flog("Requesting current configuration mode...\n");
-		com_write_status = WriteRequest(g.hComm, SCPI_CONF, strlen(SCPI_CONF));
+		com_write_status = WriteRequest(g, SCPI_CONF, strlen(SCPI_CONF));
 		flog("Getting configuration response...\n");
-		ReadResponse(&g, meter_conf, sizeof(meter_conf));
+		ReadResponse(g, meter_conf, sizeof(meter_conf));
+		flog("Meter configuration: %s\n", meter_conf);
 
 		// Parse the configuration response
 		//
@@ -933,9 +954,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		//
 		//
 		flog("Requesting READ value...\n");
-		WriteRequest(g.hComm, SCPI_READ, strlen(SCPI_READ));
+		WriteRequest(g, SCPI_READ, strlen(SCPI_READ));
 		flog("Getting response...\n");
-		ReadResponse(&g, response, sizeof(response));
+		ReadResponse(g, response, sizeof(response));
 		flog("Response: '%s'\n", response);
 
 		meter_value = strtod(response, NULL);
@@ -1094,7 +1115,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
 			case MMODES_CONT:
 				{ 
-					if (meter_value > g.cont_threshold) {
+					if (meter_value > g->cont_threshold) {
 						snprintf(g_value, sizeof(g_value), "OPEN [%05.1f%s]", meter_value, oo);
 					}
 					else {
@@ -1111,8 +1132,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 					} else {
 						snprintf(g_value, sizeof(g_value), "%06.3f V", meter_value);
 					}
-					if (meter_value < g.diode_threshold) {
-						WriteRequest(g.hComm, SCPI_BEEP, strlen(SCPI_BEEP));
+					if (meter_value < g->diode_threshold) {
+						WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
 					}
 				}
 				break;
@@ -1165,29 +1186,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 				 *
 				 *
 					case MMODES_VOLT_DCAC:
-					if (strcmp(g.range,"0.5")==0) snprintf(g_value,sizeof(g_value),"% 07.2f mV DCAC", g.v *1000.0);
-					else if (strcmp(g.range, "5")==0) snprintf(g_value, sizeof(g_value), "% 07.4f V DCAC", g.v);
-					else if (strcmp(g.range, "50")==0) snprintf(g_value, sizeof(g_value), "% 07.3f V DCAC", g.v);
-					else if (strcmp(g.range, "500")==0) snprintf(g_value, sizeof(g_value), "% 07.2f V DCAC", g.v);
-					else if (strcmp(g.range, "750")==0) snprintf(g_value, sizeof(g_value), "% 07.1f V DCAC", g.v);
+					if (strcmp(g->range,"0.5")==0) snprintf(g_value,sizeof(g_value),"% 07.2f mV DCAC", g->v *1000.0);
+					else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "% 07.4f V DCAC", g->v);
+					else if (strcmp(g->range, "50")==0) snprintf(g_value, sizeof(g_value), "% 07.3f V DCAC", g->v);
+					else if (strcmp(g->range, "500")==0) snprintf(g_value, sizeof(g_value), "% 07.2f V DCAC", g->v);
+					else if (strcmp(g->range, "750")==0) snprintf(g_value, sizeof(g_value), "% 07.1f V DCAC", g->v);
 					break;
 
 					case MMODES_CURR_AC:
-					if (strcmp(g.range,"0.0005")==0) snprintf(g_value,sizeof(g_value),"%06.2f %sA AC", g.v, uu);
-					else if (strcmp(g.range, "0.005")==0) snprintf(g_value, sizeof(g_value), "%06.4f mA AC", g.v);
-					else if (strcmp(g.range, "0.05")==0) snprintf(g_value, sizeof(g_value), "%06.3f mA AC", g.v);
-					else if (strcmp(g.range, "0.5")==0) snprintf(g_value, sizeof(g_value), "%06.2f mA AC", g.v);
-					else if (strcmp(g.range, "5")==0) snprintf(g_value, sizeof(g_value), "%06.1f A AC", g.v);
-					else if (strcmp(g.range, "10")==0) snprintf(g_value, sizeof(g_value), "%06.3f A AC", g.v);
+					if (strcmp(g->range,"0.0005")==0) snprintf(g_value,sizeof(g_value),"%06.2f %sA AC", g->v, uu);
+					else if (strcmp(g->range, "0.005")==0) snprintf(g_value, sizeof(g_value), "%06.4f mA AC", g->v);
+					else if (strcmp(g->range, "0.05")==0) snprintf(g_value, sizeof(g_value), "%06.3f mA AC", g->v);
+					else if (strcmp(g->range, "0.5")==0) snprintf(g_value, sizeof(g_value), "%06.2f mA AC", g->v);
+					else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "%06.1f A AC", g->v);
+					else if (strcmp(g->range, "10")==0) snprintf(g_value, sizeof(g_value), "%06.3f A AC", g->v);
 					break;
 
 					case MMODES_CURR_DC:
-					if (strcmp(g.range,"0.0005")==0) snprintf(g_value,sizeof(g_value),"%06.2f %sA DC", g.v, uu);
-					else if (strcmp(g.range, "0.005")==0) snprintf(g_value, sizeof(g_value), "%06.4f mA DC", g.v);
-					else if (strcmp(g.range, "0.05")==0) snprintf(g_value, sizeof(g_value), "%06.3f mA DC", g.v);
-					else if (strcmp(g.range, "0.5")==0) snprintf(g_value, sizeof(g_value), "%06.2f mA DC", g.v);
-					else if (strcmp(g.range, "5")==0) snprintf(g_value, sizeof(g_value), "%06.1f A DC", g.v);
-					else if (strcmp(g.range, "10")==0) snprintf(g_value, sizeof(g_value), "%06.3f A DC", g.v);
+					if (strcmp(g->range,"0.0005")==0) snprintf(g_value,sizeof(g_value),"%06.2f %sA DC", g->v, uu);
+					else if (strcmp(g->range, "0.005")==0) snprintf(g_value, sizeof(g_value), "%06.4f mA DC", g->v);
+					else if (strcmp(g->range, "0.05")==0) snprintf(g_value, sizeof(g_value), "%06.3f mA DC", g->v);
+					else if (strcmp(g->range, "0.5")==0) snprintf(g_value, sizeof(g_value), "%06.2f mA DC", g->v);
+					else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "%06.1f A DC", g->v);
+					else if (strcmp(g->range, "10")==0) snprintf(g_value, sizeof(g_value), "%06.3f A DC", g->v);
 					break;
 					*
 					* 
@@ -1220,7 +1241,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		int texH = 0;
 		int texW2 = 0;
 		int texH2 = 0;
-		surface = TTF_RenderUTF8_Blended(font, line1, g.font_color_volts);
+		surface = TTF_RenderUTF8_Blended(font, line1, g->font_color_volts);
 		texture = SDL_CreateTextureFromSurface(renderer, surface);
 		SDL_QueryTexture(texture, NULL, NULL, &texW, &texH);
 		SDL_Rect dstrect = { 10, 0, texW, texH };
@@ -1228,7 +1249,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		SDL_DestroyTexture(texture);
 		SDL_FreeSurface(surface);
 
-		surface_2 = TTF_RenderUTF8_Blended(font, line2, g.font_color_amps);
+		surface_2 = TTF_RenderUTF8_Blended(font, line2, g->font_color_amps);
 		texture_2 = SDL_CreateTextureFromSurface(renderer, surface_2);
 		SDL_QueryTexture(texture_2, NULL, NULL, &texW2, &texH2);
 		dstrect = { 10, texH -(texH /5), texW2, texH2 };
@@ -1251,12 +1272,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	// meter back in to "local" mode
 	//
 	//
-	WriteRequest(g.hComm, SCPI_LOCAL, strlen(SCPI_LOCAL));
+	WriteRequest(g, SCPI_LOCAL, strlen(SCPI_LOCAL));
 
 	// Close the COM port
 	//
 	//
-	CloseHandle(g.hComm); 
+	CloseHandle(g->hComm); 
 
 
 	// Clean up SDL stuff
