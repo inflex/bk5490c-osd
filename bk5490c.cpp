@@ -393,6 +393,17 @@ int parse_parameters(struct glb *g) {
 	return 0;
 }
 
+int purge_coms(struct glb *pg) {
+
+	flog("Clearing all prior comms and buffers on port COM%d\n",  pg->com_address);
+	PurgeComm( pg->hComm, PURGE_RXABORT|PURGE_RXCLEAR|PURGE_TXABORT|PURGE_TXCLEAR);
+
+	flog("Port COM%d open and ready\n", pg->com_address);
+
+	return 0;
+
+}
+
 int enable_coms(struct glb *pg, int port) {
 	wchar_t com_port[SSIZE]; // com port path / ie, \\.COM4
 	BOOL com_read_status;  // return status of various com port functions
@@ -462,23 +473,24 @@ int enable_coms(struct glb *pg, int port) {
 	timeouts.WriteTotalTimeoutConstant = 50;
 	timeouts.WriteTotalTimeoutMultiplier = 10;
 	if (SetCommTimeouts(pg->hComm, &timeouts) == FALSE) {
-		flog("\tError in setting time-outs\r\n");
+		flog("Error in setting time-outs\r\n");
 		CloseHandle(pg->hComm);
 		return 1;
 
 	} else {
-		if (!pg->quiet) { flog("\tSetting time-outs successful\r\n"); }
+		if (!pg->quiet) { flog("Setting time-outs successful\r\n"); }
 	}
 
 	com_read_status = SetCommMask(pg->hComm, EV_RXCHAR | EV_ERR); // Configure Windows to Monitor the serial device for Character Reception and Errors
 	if (com_read_status == FALSE) {
-		flog("\tError in setting CommMask\r\n");
+		flog("Error in setting CommMask\r\n");
 		CloseHandle(pg->hComm);
 		return 1;
 
 	} else {
-		if (!pg->quiet) { flog("\tCommMask successful\r\n"); }
+		if (!pg->quiet) { flog("CommMask successful\r\n"); }
 	}
+	 
 	return 0;
 }
 
@@ -539,6 +551,11 @@ int ReadResponse( struct glb *g, char *buffer, size_t buf_limit ) {
 			//
 			//
 			do {
+				if (buf_index >= buf_limit) {
+					buffer[buf_limit -1] = '\0';
+					flog("Buffer limit reached for ReadFile's supplied buffer (%d bytes)\n", buf_limit);
+					return 1;
+				}
 				// If we read 1 char and it's successful
 				//
 				if (ReadFile(g->hComm, &chRead, 1, &dwRead, NULL)) {
@@ -615,6 +632,9 @@ bool auto_detect_port(struct glb *g) {
 					flog("Success enabling comms for port %d. Testing protocol now...\r\n", port);
 				}
 
+				flog("Purging comms on port before testing IDN...\n");
+				purge_coms(g);
+
 				// We did succeed in opening the port, so now let's try
 				// send a query to it
 				//
@@ -679,7 +699,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	SDL_Surface *surface, *surface_2;
 	SDL_Texture *texture, *texture_2;
 	int meter_mode = 0;
-	MSG msg;
 	bool com_write_status;
 
 	char meter_mode_str[20];
@@ -688,6 +707,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	double meter_value;
 
 	bool eQuit = false;
+	MSG msg;
+	HWND hwnd;
 
 	flog_enable(false);
 
@@ -703,7 +724,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	 */
 	parse_parameters(g);
 
-	g->debug = true;
+// 	g->debug = true; // forced debug
 
 	if (g->debug) {
 		flog_enable( true );
@@ -828,7 +849,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	WriteRequest(g, SCPI_VAC_FAST, strlen(SCPI_VAC_FAST));
 	WriteRequest(g, SCPI_VDC_FAST, strlen(SCPI_VDC_FAST));
 
-	HWND hwnd;
+	SDL_Delay(250);
+
 
 	mode_was_changed = 1; // sets things up to switch to volts initially.
 	meter_mode = MMODES_VOLT_DC;
@@ -913,7 +935,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		//
 		if (mode_was_changed) {
 			mode_was_changed = 0;
-			flog("Request TO meter: '%s'\n", mmodes[meter_mode].query);
+			flog("MODE change request TO meter: '%s'\n", mmodes[meter_mode].query);
 			com_write_status = WriteRequest(g, mmodes[meter_mode].query, strlen(mmodes[meter_mode].query));
 
 			char response[1024];
@@ -921,9 +943,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 			ReadResponse(g, response, sizeof(response));
 			flog("Response from meter: '%s'\n", response);
 
-			com_write_status = WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
-			flog("Setting continuity mode beep ON\n");
-			com_write_status = WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
+			if (meter_mode == MMODES_DIOD || meter_mode == MMODES_CONT) {
+				flog("Setting continuity mode beep ON\n");
+				com_write_status = WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
+			}
 		} 
 
 		flog("Requesting current configuration mode...\n");
@@ -946,7 +969,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 				meter_precision = strtod(p, NULL);
 			}
 		}
-		flog("Meter configuration: %s => '%s', %f, %f\n", meter_conf, meter_mode_str, meter_range, meter_precision);
+		flog("Meter configuration conversion: %s => '%s', %f, %f\n", meter_conf, meter_mode_str, meter_range, meter_precision);
 
 		// Read a value from the meter
 		//
