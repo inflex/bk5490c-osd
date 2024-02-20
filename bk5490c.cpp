@@ -393,8 +393,13 @@ int parse_parameters(struct glb *g) {
 	return 0;
 }
 
-int enable_coms(struct glb *pg, wchar_t *com_port) {
+int enable_coms(struct glb *pg, int port) {
+	wchar_t com_port[SSIZE]; // com port path / ie, \\.COM4
 	BOOL com_read_status;  // return status of various com port functions
+								  //
+	flog("enable_coms: Port #%d requested for opening...\n", port);
+
+	snwprintf(com_port, sizeof(com_port), L"COM%d", port);
 	/*
 	 * Open the serial port
 	 */
@@ -581,9 +586,6 @@ bool auto_detect_port(struct glb *g) {
 	unsigned long dwChars = QueryDosDevice(NULL, szDevices, 65535);
 	TCHAR *ptr = szDevices;
 
-	wchar_t com_port[SSIZE]; // com port path / ie, \\.COM4
-
-
 	while (dwChars) {
 		int port;
 
@@ -601,8 +603,7 @@ bool auto_detect_port(struct glb *g) {
 				// Compose the port path ( though I suppose we could use the ptr from above )
 				//
 				//
-				snwprintf(com_port, sizeof(com_port), L"\\\\.\\COM%d", port);
-				r = enable_coms(g, com_port); // establish serial communication parameters
+				r = enable_coms(g, port); // establish serial communication parameters
 				if (r) {
 					flog("Could not enable comms for port %d, jumping to next device\r\n", port);
 					if(g->hComm) { // prevent small memory leak!
@@ -679,7 +680,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	SDL_Texture *texture, *texture_2;
 	int meter_mode = 0;
 	MSG msg;
-	wchar_t com_port[SSIZE]; // com port path / ie, \\.COM4
 	bool com_write_status;
 
 	char meter_mode_str[20];
@@ -801,10 +801,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	} else {
 
 		int r = 0;
-		flog("CLI specified connection to port: COM%d....\r\n", g->com_address);
-		snwprintf(com_port, sizeof(com_port), L"COM%d", g->com_address);
-		flog("Now attempting to connect to: %S....\r\n", com_port);
-		r = enable_coms(g, com_port); // establish serial communication parameters
+		flog("Now attempting to connect to: %d....\r\n", g->com_address);
+		r = enable_coms(g, g->com_address); // establish serial communication parameters
 		flog("Connection attempt result = %d....\r\n", r);
 		if (r != 0) {
 			flog("Unable to connect to port %d due to result=%d\n", g->com_address, r);
