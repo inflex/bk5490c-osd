@@ -77,21 +77,22 @@ struct mmode_s {
 
 
 struct mmode_s mmodes[] = { 
-	{"VOLT", "Volts DC", "MEAS:VOLT:DC?\r\n", "V DC"},  
-	{"VOLT:AC", "Volts AC", "MEAS:VOLT:AC?\r\n", "V AC"},
-	{"VOLT:DCAC", "Volts DC/AC", "MEAS:VOLT:DCAC?\r\n", "V DC/AC"},
-	{"CURR", "Current DC", "MEAS:CURR:DC?\r\n", "A DC"},
-	{"CURR:AC", "Current AC", "MEAS:CURR:AC?\r\n", "A AC"},
-	{"CURR:DCAC", "Current DC/AC", "MEAS:CURR:DCAC?\r\n", "A DC/AC"},
-	{"RES", "Resistance", "MEAS:RES?\r\n", oo },
-	{"FREQ", "Frequency", "MEAS:FREQ?\r\n", "Hz" },
-	{"PER", "Period", "MEAS:PER?\r\n", "s"},
-	{"TEMP", "Temperature", "MEAS:TEMP:TCO?\r\n", "C"},
-	{"DIOD", "Diode", "MEAS:DIOD?\r\n", "V"},
-	{"CONT", "Continuity", "MEAS:CONT?\r\n", oo},
-	{"CAP", "Capacitance", "MEAS:CAP?\r\n", "F"}
+	{"VOLT", "Volts DC", "CONF:VOLT:DC\r\n", "V DC"},  
+	{"VOLT:AC", "Volts AC", "CONF:VOLT:AC\r\n", "V AC"},
+	{"VOLT:DCAC", "Volts DC/AC", "CONF:VOLT:DCAC\r\n", "V DC/AC"},
+	{"CURR", "Current DC", "CONF:CURR:DC\r\n", "A DC"},
+	{"CURR:AC", "Current AC", "CONF:CURR:AC\r\n", "A AC"},
+	{"CURR:DCAC", "Current DC/AC", "CONF:CURR:DCAC\r\n", "A DC/AC"},
+	{"RES", "Resistance", "CONF:RES\r\n", oo },
+	{"FREQ", "Frequency", "CONF:FREQ\r\n", "Hz" },
+	{"PER", "Period", "CONF:PER\r\n", "s"},
+	{"TEMP", "Temperature", "CONF:TEMP:RTD\r\n", "C"},
+	{"DIOD", "Diode", "CONF:DIOD\r\n", "V"},
+	{"CONT", "Continuity", "CONF:CONT\r\n", oo},
+	{"CAP", "Capacitance", "CONF:CAP\r\n", "F"}
 };
 
+char SCPI_RES_ZERO_ON[] = "RES:ZERO:AUTO ON\r\n";
 char SCPI_FUNC[] = "SENS:FUNC1?\r\n";
 char SCPI_VAL1[] = "VAL1?\r\n";
 char SCPI_VAL2[] = "VAL2?\r\n";
@@ -236,11 +237,12 @@ void show_help(void) {
 			"By Paul L Daniels / pldaniels@gmail.com\r\n"
 			"Build %d / %s\r\n"
 			"\r\n"
-			" [-p <comport#>] [-z <fontsize>] [-d] [-q]\r\n"
+			" [-p <comport#>] [-z <fontsize>] [-b] [-d] [-q]\r\n"
 			"\r\n"
 			"\t-h: This help\r\n"
 			"\t-p <comport>: Set the com port for the meter, eg: -p 2\r\n"
 			"\t-z: Font size (default 72, max 256pt)\r\n"
+			"\t-b: Beep on mode change\r\n"
 			"\r\n"
 			"\t-d: debug enabled\r\n"
 			"\t-v: show version\r\n"
@@ -490,7 +492,7 @@ int enable_coms(struct glb *pg, int port) {
 	} else {
 		if (!pg->quiet) { flog("CommMask successful\r\n"); }
 	}
-	 
+
 	return 0;
 }
 
@@ -653,12 +655,12 @@ bool auto_detect_port(struct glb *g) {
 				}
 			} // if port > 0
 		} // swscanf()
-	
+
 		// advance the string pointers to the next device
 		//
-      TCHAR *temp_ptr = wcschr(ptr, '\0');
-      dwChars -= (DWORD)((temp_ptr - ptr) / sizeof(TCHAR) + 1);
-      ptr = temp_ptr + 1;
+		TCHAR *temp_ptr = wcschr(ptr, '\0');
+		dwChars -= (DWORD)((temp_ptr - ptr) / sizeof(TCHAR) + 1);
+		ptr = temp_ptr + 1;
 
 	} // while dwChars
 
@@ -700,6 +702,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	SDL_Texture *texture, *texture_2;
 	int meter_mode = 0;
 	bool com_write_status;
+	bool paused = false;
 
 	char meter_mode_str[20];
 	double meter_range;
@@ -724,7 +727,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	 */
 	parse_parameters(g);
 
-// 	g->debug = true; // forced debug
+	// 	g->debug = true; // forced debug
 
 	if (g->debug) {
 		flog_enable( true );
@@ -854,7 +857,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
 	mode_was_changed = 1; // sets things up to switch to volts initially.
 	meter_mode = MMODES_VOLT_DC;
-								 
+
 	flog("Starting main loop...\n");
 	while (!eQuit) {
 
@@ -925,8 +928,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		//
 		while (SDL_PollEvent(&w_event)) {
 			switch(w_event.type) {
-				case SDL_QUIT: eQuit = true; break;
-				default: break;
+
+				case SDL_QUIT: 
+					eQuit = true; 
+					break;
+
+				case SDL_KEYDOWN:
+					if (w_event.key.keysym.sym == SDLK_q) {
+						WriteRequest( g, SCPI_LOCAL, strlen(SCPI_LOCAL) );
+						eQuit = true;
+					}
+					if (w_event.key.keysym.sym == SDLK_p) {
+						paused ^= 1;
+						if (paused == true) WriteRequest( g, SCPI_LOCAL, strlen(SCPI_LOCAL) );
+						else WriteRequest(g, SCPI_REMOTE, strlen(SCPI_REMOTE));
+					}
+					break;
+
 			}
 		} // respond to SDL events
 
@@ -938,15 +956,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 			flog("MODE change request TO meter: '%s'\n", mmodes[meter_mode].query);
 			com_write_status = WriteRequest(g, mmodes[meter_mode].query, strlen(mmodes[meter_mode].query));
 
-			char response[1024];
-			flog("Querying response...\n");
-			ReadResponse(g, response, sizeof(response));
-			flog("Response from meter: '%s'\n", response);
+			//			char response[1024];
+			//			flog("Querying response...\n");
+			//			ReadResponse(g, response, sizeof(response));
+			//			flog("Response from meter: '%s'\n", response);
+
+			if (meter_mode == MMODES_RES) {
+				flog("Setting 2 wire resistance auto-zero to ON\n");
+				com_write_status = WriteRequest(g, SCPI_RES_ZERO_ON, strlen(SCPI_RES_ZERO_ON));
+			}
 
 			if (meter_mode == MMODES_DIOD || meter_mode == MMODES_CONT) {
 				flog("Setting continuity mode beep ON\n");
 				com_write_status = WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
 			}
+
+			com_write_status = WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
+
 		} 
 
 		flog("Requesting current configuration mode...\n");
@@ -1015,7 +1041,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 					snprintf(g_range, sizeof(g_range), "Unknown");
 				} 
 				break; // VOLTS AC
-						 
+
 
 			case MMODES_VOLT_DC:
 				if (meter_range == 0.1) {
@@ -1046,7 +1072,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
 
 			case MMODES_RES:
-				if (meter_range == 10.0) {
+				if (strstr(response, "9.90000000E+37")) {
+					snprintf(g_value, sizeof(g_value), "O.L.");
+					snprintf(g_range, sizeof(g_range), "");
+
+				} else  if (meter_range == 10.0) {
 					snprintf(g_value, sizeof(g_value),"%6.4f %s", meter_value, oo);
 					snprintf(g_range, sizeof(g_range),"10%s",oo);
 
@@ -1154,6 +1184,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 						snprintf(g_value, sizeof(g_value), "%06.3f V", meter_value);
 					}
 					if (meter_value < g->diode_threshold) {
+						flog("Diode mode below threshold, beeping (%f < %f)\n", meter_value, g->diode_threshold);
 						WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
 					}
 				}
@@ -1206,40 +1237,40 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 				 *
 				 *
 				 *
-					case MMODES_VOLT_DCAC:
-					if (strcmp(g->range,"0.5")==0) snprintf(g_value,sizeof(g_value),"% 07.2f mV DCAC", g->v *1000.0);
-					else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "% 07.4f V DCAC", g->v);
-					else if (strcmp(g->range, "50")==0) snprintf(g_value, sizeof(g_value), "% 07.3f V DCAC", g->v);
-					else if (strcmp(g->range, "500")==0) snprintf(g_value, sizeof(g_value), "% 07.2f V DCAC", g->v);
-					else if (strcmp(g->range, "750")==0) snprintf(g_value, sizeof(g_value), "% 07.1f V DCAC", g->v);
-					break;
+				 case MMODES_VOLT_DCAC:
+				 if (strcmp(g->range,"0.5")==0) snprintf(g_value,sizeof(g_value),"% 07.2f mV DCAC", g->v *1000.0);
+				 else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "% 07.4f V DCAC", g->v);
+				 else if (strcmp(g->range, "50")==0) snprintf(g_value, sizeof(g_value), "% 07.3f V DCAC", g->v);
+				 else if (strcmp(g->range, "500")==0) snprintf(g_value, sizeof(g_value), "% 07.2f V DCAC", g->v);
+				 else if (strcmp(g->range, "750")==0) snprintf(g_value, sizeof(g_value), "% 07.1f V DCAC", g->v);
+				 break;
 
-					case MMODES_CURR_AC:
-					if (strcmp(g->range,"0.0005")==0) snprintf(g_value,sizeof(g_value),"%06.2f %sA AC", g->v, uu);
-					else if (strcmp(g->range, "0.005")==0) snprintf(g_value, sizeof(g_value), "%06.4f mA AC", g->v);
-					else if (strcmp(g->range, "0.05")==0) snprintf(g_value, sizeof(g_value), "%06.3f mA AC", g->v);
-					else if (strcmp(g->range, "0.5")==0) snprintf(g_value, sizeof(g_value), "%06.2f mA AC", g->v);
-					else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "%06.1f A AC", g->v);
-					else if (strcmp(g->range, "10")==0) snprintf(g_value, sizeof(g_value), "%06.3f A AC", g->v);
-					break;
+				 case MMODES_CURR_AC:
+				 if (strcmp(g->range,"0.0005")==0) snprintf(g_value,sizeof(g_value),"%06.2f %sA AC", g->v, uu);
+				 else if (strcmp(g->range, "0.005")==0) snprintf(g_value, sizeof(g_value), "%06.4f mA AC", g->v);
+				 else if (strcmp(g->range, "0.05")==0) snprintf(g_value, sizeof(g_value), "%06.3f mA AC", g->v);
+				 else if (strcmp(g->range, "0.5")==0) snprintf(g_value, sizeof(g_value), "%06.2f mA AC", g->v);
+				 else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "%06.1f A AC", g->v);
+				 else if (strcmp(g->range, "10")==0) snprintf(g_value, sizeof(g_value), "%06.3f A AC", g->v);
+				 break;
 
-					case MMODES_CURR_DC:
-					if (strcmp(g->range,"0.0005")==0) snprintf(g_value,sizeof(g_value),"%06.2f %sA DC", g->v, uu);
-					else if (strcmp(g->range, "0.005")==0) snprintf(g_value, sizeof(g_value), "%06.4f mA DC", g->v);
-					else if (strcmp(g->range, "0.05")==0) snprintf(g_value, sizeof(g_value), "%06.3f mA DC", g->v);
-					else if (strcmp(g->range, "0.5")==0) snprintf(g_value, sizeof(g_value), "%06.2f mA DC", g->v);
-					else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "%06.1f A DC", g->v);
-					else if (strcmp(g->range, "10")==0) snprintf(g_value, sizeof(g_value), "%06.3f A DC", g->v);
-					break;
-					*
-					* 
-					*
-					*/
+				 case MMODES_CURR_DC:
+				 if (strcmp(g->range,"0.0005")==0) snprintf(g_value,sizeof(g_value),"%06.2f %sA DC", g->v, uu);
+				 else if (strcmp(g->range, "0.005")==0) snprintf(g_value, sizeof(g_value), "%06.4f mA DC", g->v);
+				 else if (strcmp(g->range, "0.05")==0) snprintf(g_value, sizeof(g_value), "%06.3f mA DC", g->v);
+				 else if (strcmp(g->range, "0.5")==0) snprintf(g_value, sizeof(g_value), "%06.2f mA DC", g->v);
+				 else if (strcmp(g->range, "5")==0) snprintf(g_value, sizeof(g_value), "%06.1f A DC", g->v);
+				 else if (strcmp(g->range, "10")==0) snprintf(g_value, sizeof(g_value), "%06.3f A DC", g->v);
+				 break;
+				 *
+				 * 
+				 *
+				 */
 
 
 		} // SWITCH meter mode - converting value
-		  
-		  
+
+
 		// Compose the two lines for the meter OSD output
 		//
 		//
