@@ -25,6 +25,7 @@
 #include <SDL_ttf.h>
 #include <fstream>
 #include <iostream>
+#include "confparse.h"
 #include "flog.h"
 
 
@@ -103,6 +104,7 @@ char SCPI_RANGE[] = "CONF:RANG?\r\n";
 char SCPI_CONF[] = "CONF?\r\n";
 char SCPI_READ[] = "READ?\r\n";
 char SCPI_BEEP_ON[] = "SYST:BEEP:STAT 1\r\n";
+char SCPI_BEEP_OFF[] = "SYST:BEEP:STAT 0\r\n";
 char SCPI_BEEP[] = "SYST:BEEP\r\n";
 char SCPI_VAC_FAST[] = "VOLT:AC:SPEE FAST\r\n";
 char SCPI_VDC_FAST[] = "VOLT:NPLC 1\r\n";
@@ -165,8 +167,12 @@ struct glb {
 	wchar_t mmdata_output_file[MAX_PATH];
 	wchar_t mmdata_output_temp_file[MAX_PATH];
 
+	bool cont_beep_enabled;
 	double cont_threshold;
+	bool diode_beep_enabled;
 	double diode_threshold;
+	 
+	bool system_beep;
 
 };
 
@@ -226,8 +232,12 @@ int init(struct glb *g) {
 
 	g->serial_params[0] = '\0';
 
-	g->cont_threshold = 10.0;
-	g->diode_threshold = 0.1;
+	g->cont_beep_enabled = true;
+	g->cont_threshold = 1.0;
+
+	g->diode_beep_enabled = true;
+	g->diode_threshold = 0.05;
+	g->system_beep = false;
 
 	return 0;
 }
@@ -688,6 +698,7 @@ Changes:
 \------------------------------------------------------------------*/
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
 
+	Confparse conf;
 	struct glb glbs, *g;        // Global structure for passing variables around
 	char meter_conf[SSIZE];
 	int mode_was_changed = 0;
@@ -727,7 +738,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	 */
 	parse_parameters(g);
 
-	// 	g->debug = true; // forced debug
+	/*
+	 * Load configuration
+	 */
+	conf.Load("bk5490c.cfg");
+	g->debug = conf.ParseBool("debug", false);
+	g->font_size = conf.ParseInt("font_size", 72);
+	g->diode_threshold = conf.ParseDouble("diode_beep_threshold", 0.05);
+	g->diode_beep_enabled = conf.ParseBool("diode_beep_enabled", true);
+	g->cont_threshold = conf.ParseDouble("continuity_beep_threshold", 1.00);
+	g->cont_beep_enabled = conf.ParseBool("continuity_beep_enabled", true);
+	g->system_beep = conf.ParseBool("system_beep", false);
+
+	//g->debug = true; // forced debug
 
 	if (g->debug) {
 		flog_enable( true );
@@ -845,8 +868,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	flog("Setting meter to REMOTE modes\n");
 	WriteRequest(g, SCPI_REMOTE, strlen(SCPI_REMOTE));
 
-	flog("Setting continuity mode beep ON\n");
-	WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
+	if (g->system_beep) {
+		flog("Setting continuity mode beep ON\n");
+		WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
+	} else {
+		flog("Setting continuity mode beep OFF\n");
+		WriteRequest(g, SCPI_BEEP_OFF, strlen(SCPI_BEEP_OFF));
+	}
 
 	flog("Setting Speeds of measurements\n");
 	WriteRequest(g, SCPI_VAC_FAST, strlen(SCPI_VAC_FAST));
@@ -877,6 +905,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		//
 		if (PeekMessage(&msg, hwnd,  WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {
 			if (msg.message == WM_HOTKEY) { 
+				flog("Hotkey detected\n");
 				switch (LOWORD(msg.wParam)) { 
 					case HOTKEY_VOLTS:
 						meter_mode = MMODES_VOLT_DC;
@@ -966,10 +995,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 				com_write_status = WriteRequest(g, SCPI_RES_ZERO_ON, strlen(SCPI_RES_ZERO_ON));
 			}
 
-			if (meter_mode == MMODES_DIOD || meter_mode == MMODES_CONT) {
-				flog("Setting continuity mode beep ON\n");
-				com_write_status = WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
-			}
+//			if (meter_mode == MMODES_DIOD || meter_mode == MMODES_CONT) {
+//				flog("Setting continuity mode beep ON\n");
+//				com_write_status = WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
+//			}
 
 			com_write_status = WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
 
@@ -1171,6 +1200,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 					}
 					else {
 						snprintf(g_value, sizeof(g_value), "SHRT [%05.1f%s]", meter_value, oo);
+						if (g->cont_beep_enabled) {
+							flog("Resistance below threshold, beeping (%f < %f)\n", meter_value, g->diode_threshold);
+							WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
+						}
 					}
 				}
 				break;
@@ -1183,7 +1216,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 					} else {
 						snprintf(g_value, sizeof(g_value), "%06.3f V", meter_value);
 					}
-					if (meter_value < g->diode_threshold) {
+
+					if (g->diode_beep_enabled && meter_value < g->diode_threshold) {
 						flog("Diode mode below threshold, beeping (%f < %f)\n", meter_value, g->diode_threshold);
 						WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
 					}
@@ -1274,6 +1308,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		// Compose the two lines for the meter OSD output
 		//
 		//
+		flog("Composing text for OSD\n");
 		snprintf(line1, sizeof(line1), "%s", g_value);
 		snprintf(line2, sizeof(line2), "%s, %s", meter_mode_str, g_range);
 		flog("%s\n%s\n", line1, line2);
@@ -1293,6 +1328,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		int texH = 0;
 		int texW2 = 0;
 		int texH2 = 0;
+		flog("Generating line1 surface->texture");
 		surface = TTF_RenderUTF8_Blended(font, line1, g->font_color_volts);
 		texture = SDL_CreateTextureFromSurface(renderer, surface);
 		SDL_QueryTexture(texture, NULL, NULL, &texW, &texH);
@@ -1301,6 +1337,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		SDL_DestroyTexture(texture);
 		SDL_FreeSurface(surface);
 
+		flog("Generating line2 surface->texture");
 		surface_2 = TTF_RenderUTF8_Blended(font, line2, g->font_color_amps);
 		texture_2 = SDL_CreateTextureFromSurface(renderer, surface_2);
 		SDL_QueryTexture(texture_2, NULL, NULL, &texW2, &texH2);
@@ -1310,6 +1347,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		SDL_FreeSurface(surface_2);
 
 
+		flog("Presenting composed OSD to display\n");
 		SDL_RenderPresent(renderer);
 
 
@@ -1324,19 +1362,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	// meter back in to "local" mode
 	//
 	//
+	flog("Switching back to local mode for meter\n");
 	WriteRequest(g, SCPI_LOCAL, strlen(SCPI_LOCAL));
 
 	// Close the COM port
 	//
 	//
+	flog("Disconnecting from COM port\n");
 	CloseHandle(g->hComm); 
 
 
 	// Clean up SDL stuff
 	//
 	//
+	flog("Shutting down SDL Renderer\n");
 	SDL_DestroyWindow(window);
 	SDL_Quit();
+
+	flog("Done.\n");
+
 
 	return 0;
 

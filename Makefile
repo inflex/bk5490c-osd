@@ -24,12 +24,12 @@ WINFLAGS= -municode -static-libgcc -static-libstdc++  -Wunused-variable $(SDL_FL
 WINOBJ=bk5490c.exe
 
 .c.o:
-	$(GCC) $(CFLAGS) $(COMPONENTS) -c $*.c
+	$(GCC) $(CFLAGS) $(COMPONENTS) $(SDL_FLAGS) -c $*.c
 
 .cpp.o:
-	$(GPP) $(CFLAGS) $(COMPONENTS) -c $*.cpp
+	$(GPP) $(CFLAGS) $(COMPONENTS) $(SDL_FLAGS) -c $*.cpp
 
-OFILES=flog.o
+OFILES=flog.o confparse.o
 win: $(OFILES)
 	@echo Build Release $(BV)
 	@echo Build Date $(BD)
