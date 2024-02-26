@@ -20,6 +20,7 @@
 #include <strsafe.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <filesystem>
 #include <wchar.h>
 #include <SDL.h>
 #include <SDL_ttf.h>
@@ -159,7 +160,10 @@ struct glb {
 	int font_size;
 	int font_weight;
 
+	std::filesystem::path line1_font_filename, line2_font_filename;
+	TTF_Font *line1_font, *line2_font;
 	SDL_Color line1_color, line2_color, background_color;
+	int line1_font_size, line2_font_size;
 
 	char serial_params[SSIZE];
 
@@ -750,7 +754,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	 */
 	conf.Load("bk5490c.cfg");
 	g->debug = conf.ParseBool("debug", false);
-	g->font_size = conf.ParseInt("font_size", 72);
+	g->line1_font_filename = conf.ParsePath("line1_font", "RobotoMono-Regular.ttf");
+	g->line1_font_size = conf.ParseInt("line1_font_size", 72);
+
+	g->line2_font_filename = conf.ParsePath("line2_font", "RobotoMono-Regular.ttf");
+	g->line2_font_size = conf.ParseInt("line2_font_size", 46);
+
 	g->diode_threshold = conf.ParseDouble("diode_beep_threshold", 0.05);
 	g->diode_beep_enabled = conf.ParseBool("diode_beep_enabled", true);
 	g->cont_threshold = conf.ParseDouble("continuity_beep_threshold", 1.00);
@@ -824,10 +833,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	RegisterHotKey(NULL, HOTKEY_TEMPERATURE, MOD_ALT + MOD_SHIFT, 'T'); 
 
 	TTF_Init();
-	TTF_Font *font = TTF_OpenFont("RobotoMono-Bold.ttf", g->font_size);
-	if ( !font ) { flog("Ooops - something went wrong when trying to create the %d px font", g->font_size ); exit(1); }
-	TTF_Font *font_half = TTF_OpenFont("RobotoMono-Bold.ttf", g->font_size/2);
-	if ( !font ) { flog("Ooops - something went wrong when trying to create the %d px font", g->font_size/2 ); exit(1); }
+	g->line1_font = TTF_OpenFont(g->line1_font_filename.string().c_str(), g->line1_font_size);//"RobotoMono-Bold.ttf", g->font_size);
+	if ( !g->line1_font ) { flog("Ooops - something went wrong when trying to create the %d px font", g->line1_font_size ); exit(1); }
+	g->line2_font = TTF_OpenFont(g->line2_font_filename.string().c_str(), g->line2_font_size);//"RobotoMono-Bold.ttf", g->font_size);
+	if ( !g->line2_font ) { flog("Ooops - something went wrong when trying to create the %d px font", g->line2_font_size ); exit(1); }
 
 
 	/*
@@ -836,10 +845,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	 * Parameters passed can override the font self-detect sizing
 	 *
 	 */
-	int data_w, data_h;
-	TTF_SizeText(font_half, "00.000", &data_w, &data_h);
-	TTF_SizeText(font, " 00.00000 mV", &g->window_width, &g->window_height);
-	g->window_width += data_w;
+	TTF_SizeText(g->line1_font, " 00.00000 mV", &g->window_width, &g->window_height);
 	g->window_height *= 1.85;
 
 	if (g->wx_forced) g->window_width = g->wx_forced;
@@ -847,11 +853,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
 	SDL_Window *window = SDL_CreateWindow("B&K 549XC Meter", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g->window_width, g->window_height, 0);
 	SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
-	if (!font) {
-		flog("Error trying to open font :( \r\n");
-		exit(1);
-	}
-
 
 	/* Select the color for drawing-> It is set to red here. */
 	SDL_SetRenderDrawColor(renderer, g->background_color.r, g->background_color.g, g->background_color.b, 255 );
@@ -1359,7 +1360,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		int texW2 = 0;
 		int texH2 = 0;
 		flog("Generating line1 surface->texture");
-		surface = TTF_RenderUTF8_Blended(font, line1, g->line1_color);
+		surface = TTF_RenderUTF8_Blended(g->line1_font, line1, g->line1_color);
 		texture = SDL_CreateTextureFromSurface(renderer, surface);
 		SDL_QueryTexture(texture, NULL, NULL, &texW, &texH);
 		SDL_Rect dstrect = { 10, 0, texW, texH };
@@ -1368,7 +1369,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		SDL_FreeSurface(surface);
 
 		flog("Generating line2 surface->texture");
-		surface_2 = TTF_RenderUTF8_Blended(font, line2, g->line2_color);
+		surface_2 = TTF_RenderUTF8_Blended(g->line2_font, line2, g->line2_color);
 		texture_2 = SDL_CreateTextureFromSurface(renderer, surface_2);
 		SDL_QueryTexture(texture_2, NULL, NULL, &texW2, &texH2);
 		dstrect = { 10, texH -(texH /5), texW2, texH2 };
