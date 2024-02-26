@@ -106,6 +106,7 @@ char SCPI_READ[] = "READ?\r\n";
 char SCPI_BEEP_ON[] = "SYST:BEEP:STAT 1\r\n";
 char SCPI_BEEP_OFF[] = "SYST:BEEP:STAT 0\r\n";
 char SCPI_BEEP[] = "SYST:BEEP\r\n";
+char SCPI_BEEP_FORCE[] = "SYST:BEEP:STAT 1\r\nSYST:BEEP\r\nSYST:BEEP:STAT 0\r\n";
 char SCPI_VAC_FAST[] = "VOLT:AC:SPEE FAST\r\n";
 char SCPI_VDC_FAST[] = "VOLT:NPLC 1\r\n";
 char SCPI_IDN[] = "*IDN?\r\n";
@@ -158,8 +159,7 @@ struct glb {
 	int font_size;
 	int font_weight;
 
-	SDL_Color font_color_volts, font_color_amps, background_color;
-	SDL_Color plot_color_amps, plot_color_volts;
+	SDL_Color line1_color, line2_color, background_color;
 
 	char serial_params[SSIZE];
 
@@ -223,10 +223,8 @@ int init(struct glb *g) {
 	g->wx_forced = 0;
 	g->wy_forced = 0;
 
-	g->font_color_volts =  { 10, 200, 10 };
-	g->font_color_amps =  { 200, 200, 10 };
-	g->plot_color_volts=  { 255, 0, 0 };
-	g->plot_color_amps =  { 255, 255, 255 };
+	g->line1_color =  { 10, 200, 10 };
+	g->line2_color =  { 200, 200, 10 };
 	g->background_color = { 0, 0, 0 };
 
 
@@ -541,6 +539,8 @@ bool WriteRequest( struct glb *g, char * lpBuf, DWORD dwToWrite) {
 
 	CloseHandle(osWrite.hEvent);
 	flog("buffer write completed\n");
+	SDL_Delay(10); // 10ms delay
+						//
 	return fRes;
 }
 
@@ -678,6 +678,13 @@ bool auto_detect_port(struct glb *g) {
 	return false; // if we made it to the end of the function, auto-detection failed
 
 } // Autodetect
+  //
+uint32_t str2color( char *str ) {
+						int r, gg, b;
+						sscanf(str, "#%02x%02x%02x", &r, &gg, &b);
+						return ( r | (gg << 8) | (b  << 16) );
+}
+
 
 /*-----------------------------------------------------------------\
   Date Code:	: 20180127-220307
@@ -749,6 +756,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	g->cont_threshold = conf.ParseDouble("continuity_beep_threshold", 1.00);
 	g->cont_beep_enabled = conf.ParseBool("continuity_beep_enabled", true);
 	g->system_beep = conf.ParseBool("system_beep", false);
+
+	uint32_t tc;
+	tc = conf.ParseHex("background_color", 0x000000);
+	g->background_color.r = (tc & 0xff0000) >> 16;
+	g->background_color.g = (tc & 0x00ff00) >> 8;
+	g->background_color.b = tc & 0x0000ff;
+
+	tc = conf.ParseHex("line1_color", 0x0ac80a);
+	g->line1_color.r = (tc & 0xff0000) >> 16;
+	g->line1_color.g = (tc & 0x00ff00) >> 8;
+	g->line1_color.b = tc & 0x0000ff;
+
+	tc = conf.ParseHex("line2_color", 0xc8c80a);
+	g->line2_color.r = (tc & 0xff0000) >> 16;
+	g->line2_color.g = (tc & 0x00ff00) >> 8;
+	g->line2_color.b = tc & 0x0000ff;
 
 	//g->debug = true; // forced debug
 
@@ -1000,7 +1023,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 //				com_write_status = WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
 //			}
 
-			com_write_status = WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
+			//com_write_status = WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
+			com_write_status = WriteRequest(g, SCPI_BEEP_FORCE, strlen(SCPI_BEEP_FORCE));
 
 		} 
 
@@ -1202,7 +1226,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 						snprintf(g_value, sizeof(g_value), "SHRT [%05.1f%s]", meter_value, oo);
 						if (g->cont_beep_enabled) {
 							flog("Resistance below threshold, beeping (%f < %f)\n", meter_value, g->diode_threshold);
-							WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
+			//				WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
+			com_write_status = WriteRequest(g, SCPI_BEEP_FORCE, strlen(SCPI_BEEP_FORCE));
 						}
 					}
 				}
@@ -1219,7 +1244,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
 					if (g->diode_beep_enabled && meter_value < g->diode_threshold) {
 						flog("Diode mode below threshold, beeping (%f < %f)\n", meter_value, g->diode_threshold);
-						WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
+					//	WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
+			com_write_status = WriteRequest(g, SCPI_BEEP_FORCE, strlen(SCPI_BEEP_FORCE));
 					}
 				}
 				break;
@@ -1317,7 +1343,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		// Clear the OSD canvas
 		//
 		//
-		SDL_SetRenderDrawColor(renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
+		SDL_SetRenderDrawColor(renderer, g->background_color.r, g->background_color.g, g->background_color.b, SDL_ALPHA_OPAQUE);
+
 		SDL_RenderClear(renderer);
 
 
@@ -1329,7 +1356,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		int texW2 = 0;
 		int texH2 = 0;
 		flog("Generating line1 surface->texture");
-		surface = TTF_RenderUTF8_Blended(font, line1, g->font_color_volts);
+		surface = TTF_RenderUTF8_Blended(font, line1, g->line1_color);
 		texture = SDL_CreateTextureFromSurface(renderer, surface);
 		SDL_QueryTexture(texture, NULL, NULL, &texW, &texH);
 		SDL_Rect dstrect = { 10, 0, texW, texH };
@@ -1338,7 +1365,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 		SDL_FreeSurface(surface);
 
 		flog("Generating line2 surface->texture");
-		surface_2 = TTF_RenderUTF8_Blended(font, line2, g->font_color_amps);
+		surface_2 = TTF_RenderUTF8_Blended(font, line2, g->line2_color);
 		texture_2 = SDL_CreateTextureFromSurface(renderer, surface_2);
 		SDL_QueryTexture(texture_2, NULL, NULL, &texW2, &texH2);
 		dstrect = { 10, texH -(texH /5), texW2, texH2 };
@@ -1353,7 +1380,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
 		flog("----------------------\n");
 
-		SDL_Delay(20);
+		SDL_Delay(100);
 
 	} // main running loop / eQuit
 
