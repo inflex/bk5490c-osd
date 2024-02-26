@@ -762,16 +762,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	g->background_color.r = (tc & 0xff0000) >> 16;
 	g->background_color.g = (tc & 0x00ff00) >> 8;
 	g->background_color.b = tc & 0x0000ff;
+	flog("Background color: parsed 0x%x, converted to %d %d %d\n", tc, g->background_color.r, g->background_color.g, g->background_color.b);
 
 	tc = conf.ParseHex("line1_color", 0x0ac80a);
 	g->line1_color.r = (tc & 0xff0000) >> 16;
 	g->line1_color.g = (tc & 0x00ff00) >> 8;
 	g->line1_color.b = tc & 0x0000ff;
+	flog("Line1 color: parsed 0x%x, converted to %d %d %d\n", tc, g->line1_color.r, g->line1_color.g, g->line1_color.b);
 
 	tc = conf.ParseHex("line2_color", 0xc8c80a);
 	g->line2_color.r = (tc & 0xff0000) >> 16;
 	g->line2_color.g = (tc & 0x00ff00) >> 8;
 	g->line2_color.b = tc & 0x0000ff;
+	flog("Line2 color: parsed 0x%x, converted to %d %d %d\n", tc, g->line2_color.r, g->line2_color.g, g->line2_color.b);
 
 	//g->debug = true; // forced debug
 
