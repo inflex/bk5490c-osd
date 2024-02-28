@@ -140,25 +140,18 @@ struct metermode_s {
 };
 
 struct glb {
+
+	HANDLE hComm;
+
 	int wx_forced, wy_forced;
 	int window_x, window_y;
 	int window_width, window_height;
 
-	int draw_minmaxes;
-	int draw_graph;
-
-	HANDLE hComm;
-
 	uint8_t debug;
-	uint8_t comms_enabled;
 	uint8_t quiet;
 	uint8_t show_mode;
 	uint16_t flags;
 	uint8_t com_address;
-
-	wchar_t font_name[FONT_NAME_SIZE];
-	int font_size;
-	int font_weight;
 
 	std::filesystem::path line1_font_filename, line2_font_filename;
 	TTF_Font *line1_font, *line2_font;
@@ -167,9 +160,9 @@ struct glb {
 
 	char serial_params[SSIZE];
 
-	int mmdata_active;
-	wchar_t mmdata_output_file[MAX_PATH];
-	wchar_t mmdata_output_temp_file[MAX_PATH];
+	bool mmdata_enable;
+	std::filesystem::path mmdata_output_file[MAX_PATH];
+	std::filesystem::path mmdata_output_temp_file[MAX_PATH];
 
 	bool cont_beep_enabled;
 	double cont_threshold;
@@ -209,19 +202,13 @@ Changes:
 int init(struct glb *g) {
 	g->window_x = DEFAULT_WINDOW_WIDTH;
 	g->window_y = DEFAULT_WINDOW_HEIGHT;
-	g->draw_minmaxes = 1;
-	g->draw_graph = 1;
-	g->debug = 0;
-	g->comms_enabled = 1;
+	g->debug = false;
 	g->quiet = 0;
 	g->show_mode = 0;
 	g->flags = 0;
-	g->font_size = DEFAULT_FONT_SIZE;
-	g->font_weight = DEFAULT_FONT_WEIGHT;
 	g->com_address = DEFAULT_COM_PORT;
-	g->mmdata_active = 1;
+	g->mmdata_enable = false;
 
-	g->font_size = 72;
 	g->window_width = 500;
 	g->window_height = 120;
 	g->wx_forced = 0;
@@ -248,20 +235,6 @@ void show_help(void) {
 	printf("B&K5490C SCPI Meter\r\n"
 			"By Paul L Daniels / pldaniels@gmail.com\r\n"
 			"Build %d / %s\r\n"
-			"\r\n"
-			" [-p <comport#>] [-z <fontsize>] [-b] [-d] [-q]\r\n"
-			"\r\n"
-			"\t-h: This help\r\n"
-			"\t-p <comport>: Set the com port for the meter, eg: -p 2\r\n"
-			"\t-z: Font size (default 72, max 256pt)\r\n"
-			"\t-b: Beep on mode change\r\n"
-			"\r\n"
-			"\t-d: debug enabled\r\n"
-			"\t-v: show version\r\n"
-			"\r\n"
-			"\tDefaults: -z 72\r\n"
-			"\r\n"
-			"\texample: bk5492 -z 120 -p 4\r\n"
 			, BUILD_VER
 			, BUILD_DATE 
 			);
@@ -290,7 +263,6 @@ int parse_parameters(struct glb *g) {
 	LPWSTR *argv;
 	int argc;
 	int i;
-	int fz = DEFAULT_FONT_SIZE;
 
 	argv = CommandLineToArgvW(GetCommandLineW(), &argc);
 	if (NULL == argv) {
@@ -301,101 +273,8 @@ int parse_parameters(struct glb *g) {
 		if (argv[i][0] == '-') {
 			/* parameter */
 			switch (argv[i][1]) {
-				case 'h':
-					show_help();
-					exit(1);
-					break;
-
-				case 'o':
-					if (argv[i][2] == 'm') {
-						if (i >= (argc -1)) {
-							StringCbPrintfW(g->mmdata_output_file, MAX_PATH, L"mmdata.txt");
-							StringCbPrintfW(g->mmdata_output_temp_file, MAX_PATH, L"mmdata.tmp");
-						} else {
-							i++;
-							StringCbPrintfW(g->mmdata_output_file, MAX_PATH, L"%s\\mmdata.txt", argv[i]);
-							StringCbPrintfW(g->mmdata_output_temp_file, MAX_PATH, L"%s\\mmdata.tmp", argv[i]);
-						}
-						g->mmdata_active = 1;
-					}
-					break;
-
-
-
-				case 'w':
-					if (argv[i][2] == 'x') {
-						i++;
-						g->window_x = _wtoi(argv[i]);
-					} else if (argv[i][2] == 'y') {
-						i++;
-						g->window_y = _wtoi(argv[i]);
-					}
-					break;
-
-				case 'b':
-					if (argv[i][2] == 'c') {
-						int r, gg, b;
-
-						i++;
-						swscanf(argv[i], L"#%02x%02x%02x", &r, &gg, &b);
-						//g->background_color = RGB(r, gg, b);
-					}
-					break;
-
-				case 'f':
-					if (argv[i][2] == 'w') {
-						i++;
-						g->font_weight = _wtoi(argv[i]);
-
-					} else if (argv[i][2] == 'c') {
-						int r, gg, b;
-
-						i++;
-						swscanf(argv[i], L"#%02x%02x%02x", &r, &gg, &b);
-						//						g->font_color = RGB(r, gg, b);
-
-					} else if (argv[i][2] == 'n') {
-						i++;
-						StringCbPrintfW(g->font_name, FONT_NAME_SIZE, L"%s", argv[i]);
-					}
-					break;
-
-				case 'z':
-					i++;
-					if (i < argc) {
-						fz = _wtoi(argv[i]);
-						if (fz < FONT_SIZE_MIN) {
-							fz = FONT_SIZE_MIN;
-						} else if (fz > FONT_SIZE_MAX) {
-							fz = FONT_SIZE_MAX;
-						}
-						g->font_size = fz;
-					}
-					break;
-
-				case 'p':
-					i++;
-					if (i < argc) {
-						g->com_address = _wtoi(argv[i]);
-					} else {
-						wprintf(L"Insufficient parameters; -p <com port>\n");
-						exit(1);
-					}
-					break;
 
 				case 'd': g->debug = 1; break;
-
-				case 'm': g->show_mode = 1; break;
-
-				case 's':
-							 i++;
-							 if (i < argc) {
-								 wcstombs(g->serial_params, argv[i], sizeof(g->serial_params));
-							 } else {
-								 wprintf(L"Insufficient parameters; -s <parameters> [eg 9600:8:o:1] = 9600, 8-bit, odd, 1-stop\n");
-								 exit(1);
-							 }
-							 break;
 
 				default: break;
 			} // switch
@@ -753,6 +632,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	 * Load configuration
 	 */
 	conf.Load("bk5490c.cfg");
+
+	g->mmdata_enable = conf.ParseBool("mmdata_enable", false);
+	
 	g->debug = conf.ParseBool("debug", false);
 	g->line1_font_filename = conf.ParsePath("line1_font", "RobotoMono-Regular.ttf");
 	g->line1_font_size = conf.ParseInt("line1_font_size", 72);
@@ -773,13 +655,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	g->background_color.b = tc & 0x0000ff;
 	flog("Background color: parsed 0x%x, converted to %d %d %d\n", tc, g->background_color.r, g->background_color.g, g->background_color.b);
 
-	tc = conf.ParseHex("line1_color", 0x0ac80a);
+	tc = conf.ParseHex("line1_font_color", 0x0ac80a);
 	g->line1_color.r = (tc & 0xff0000) >> 16;
 	g->line1_color.g = (tc & 0x00ff00) >> 8;
 	g->line1_color.b = tc & 0x0000ff;
 	flog("Line1 color: parsed 0x%x, converted to %d %d %d\n", tc, g->line1_color.r, g->line1_color.g, g->line1_color.b);
 
-	tc = conf.ParseHex("line2_color", 0xc8c80a);
+	tc = conf.ParseHex("line2_font_color", 0xc8c80a);
 	g->line2_color.r = (tc & 0xff0000) >> 16;
 	g->line2_color.g = (tc & 0x00ff00) >> 8;
 	g->line2_color.b = tc & 0x0000ff;
@@ -845,7 +727,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 	 * Parameters passed can override the font self-detect sizing
 	 *
 	 */
-	TTF_SizeText(g->line1_font, " 00.00000 mV", &g->window_width, &g->window_height);
+	TTF_SizeText(g->line1_font, " 00.00000 mV DCV", &g->window_width, &g->window_height);
 	g->window_height *= 1.85;
 
 	if (g->wx_forced) g->window_width = g->wx_forced;
@@ -1012,22 +894,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 			flog("MODE change request TO meter: '%s'\n", mmodes[meter_mode].query);
 			com_write_status = WriteRequest(g, mmodes[meter_mode].query, strlen(mmodes[meter_mode].query));
 
-			//			char response[1024];
-			//			flog("Querying response...\n");
-			//			ReadResponse(g, response, sizeof(response));
-			//			flog("Response from meter: '%s'\n", response);
-
 			if (meter_mode == MMODES_RES) {
 				flog("Setting 2 wire resistance auto-zero to ON\n");
 				com_write_status = WriteRequest(g, SCPI_RES_ZERO_ON, strlen(SCPI_RES_ZERO_ON));
 			}
 
-//			if (meter_mode == MMODES_DIOD || meter_mode == MMODES_CONT) {
-//				flog("Setting continuity mode beep ON\n");
-//				com_write_status = WriteRequest(g, SCPI_BEEP_ON, strlen(SCPI_BEEP_ON));
-//			}
-
-			//com_write_status = WriteRequest(g, SCPI_BEEP, strlen(SCPI_BEEP));
 			com_write_status = WriteRequest(g, SCPI_BEEP_FORCE, strlen(SCPI_BEEP_FORCE));
 
 		} 
